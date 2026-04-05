@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<!-- saved from url=(0229)file:///Users/Connorhopman2/Library/Application%20Support/Claude/local-agent-mode-sessions/71afb9ef-70f2-4d8e-b2c9-31e306665b4c/80bee1b9-4049-4277-bde9-b8955b05281b/local_a96f992c-d6a5-4db0-8662-a4a5b1b638e1/outputs/kie-test.html -->
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<title>Kie.ai API Test</title>
+<style>
+  body { font-family: sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; background: #111; color: #eee; }
+  h1 { font-size: 1.3rem; margin-bottom: 24px; }
+  label { display: block; font-size: 0.85rem; color: #aaa; margin-bottom: 4px; margin-top: 16px; }
+  input, textarea { width: 100%; box-sizing: border-box; background: #222; border: 1px solid #444; color: #eee; padding: 10px; border-radius: 6px; font-size: 0.95rem; }
+  textarea { height: 80px; resize: vertical; }
+  button { margin-top: 20px; width: 100%; padding: 14px; background: #5c6fff; color: #fff; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; }
+  button:disabled { background: #444; cursor: not-allowed; }
+  #status { margin-top: 16px; padding: 12px; background: #1e1e1e; border-radius: 6px; font-size: 0.85rem; line-height: 1.6; min-height: 40px; white-space: pre-wrap; word-break: break-all; }
+  #result img { margin-top: 16px; max-width: 100%; border-radius: 8px; }
+</style>
+</head>
+<body>
+
+<h1>Kie.ai — Nano Banana 2 API Test</h1>
+
+<label>API Key</label>
+<input type="password" id="apiKey" placeholder="Paste your kie.ai API key">
+
+<label>Prompt</label>
+<textarea id="prompt">A person wearing the clothing from the reference image, studio white background</textarea>
+
+<label>Image URL 1 (required — paste a hosted image URL)</label>
+<input type="url" id="img1" placeholder="https://...">
+
+<label>Image URL 2 (optional)</label>
+<input type="url" id="img2" placeholder="https://...">
+
+<label>Image URL 3 (optional)</label>
+<input type="url" id="img3" placeholder="https://...">
+
+<button id="btn" onclick="run()">Generate</button>
+
+<div id="status">Waiting…</div>
+<div id="result"></div>
+
+<script>
+const log = (msg) => { document.getElementById('status').textContent = msg; };
+
+async function run() {
+  const apiKey = document.getElementById('apiKey').value.trim();
+  const prompt = document.getElementById('prompt').value.trim();
+  const img1   = document.getElementById('img1').value.trim();
+  const img2   = document.getElementById('img2').value.trim();
+  const img3   = document.getElementById('img3').value.trim();
+
+  if (!apiKey) { log('ERROR: Enter your API key.'); return; }
+  if (!prompt) { log('ERROR: Enter a prompt.'); return; }
+
+  const imageInput = [img1, img2, img3].filter(Boolean);
+
+  const body = {
+    model: 'nano-banana-2',
+    input: {
+      prompt,
+      image_input:   imageInput,
+      aspect_ratio:  '1:1',
+      resolution:    '1K',
+      output_format: 'png',
+    }
+  };
+
+  log('Sending request…\n\n' + JSON.stringify(body, null, 2));
+
+  document.getElementById('btn').disabled = true;
+  document.getElementById('result').innerHTML = '';
+
+  let taskId;
+  try {
+    const res = await fetch('https://api.kie.ai/api/v1/jobs/createTask', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    log('createTask response:\n' + JSON.stringify(data, null, 2));
+    taskId = data?.data?.taskId || data?.taskId;
+    if (!taskId) { document.getElementById('btn').disabled = false; return; }
+  } catch(e) {
+    log('createTask ERROR: ' + e.message);
+    document.getElementById('btn').disabled = false;
+    return;
+  }
+
+  log(`Task created: ${taskId}\nPolling every 5s…`);
+
+  for (let i = 0; i < 90; i++) {
+    await new Promise(r => setTimeout(r, 5000));
+    try {
+      const res = await fetch(`https://api.kie.ai/api/v1/jobs/recordInfo?taskId=${taskId}`, {
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+      });
+      const data = await res.json();
+      log(`Poll ${i+1} response:\n` + JSON.stringify(data, null, 2));
+
+      const task  = data?.data;
+      const state = task?.state || task?.status || '';
+      const done  = task?.successFlag === 1 || state === 'success' || state === 'completed';
+      const fail  = task?.successFlag >= 2   || state === 'fail'   || state === 'failed';
+
+      if (done) {
+        let url = task?.response?.result_urls?.[0]
+               || task?.response?.resultUrls?.[0]
+               || task?.resultUrl;
+        if (!url && task?.resultJson) {
+          try {
+            const rj = typeof task.resultJson === 'string' ? JSON.parse(task.resultJson) : task.resultJson;
+            url = rj?.result_urls?.[0] || rj?.resultUrls?.[0] || rj?.url || (Array.isArray(rj) ? rj[0] : null);
+          } catch(e) {}
+        }
+        if (url) {
+          log('✅ Done! Image URL:\n' + url);
+          document.getElementById('result').innerHTML = `<img src="${url}" />`;
+        } else {
+          log('✅ Done but no image URL found. Full response above.');
+        }
+        break;
+      }
+      if (fail) {
+        log('❌ Failed: ' + (task?.failMsg || task?.errorMessage || 'unknown error'));
+        break;
+      }
+      log(`Poll ${i+1} — state: "${state || 'unknown'}" — waiting…`);
+    } catch(e) {
+      log(`Poll ${i+1} error: ${e.message}`);
+    }
+  }
+
+  document.getElementById('btn').disabled = false;
+}
+</script>
+
+
+</body></html>
